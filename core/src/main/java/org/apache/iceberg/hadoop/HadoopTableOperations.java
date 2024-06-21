@@ -226,10 +226,10 @@ public class HadoopTableOperations implements TableOperations {
     int currentMaxVersion = findVersionWithOutVersionHint(fs);
     long now = System.currentTimeMillis();
     // We don't clean up the most recent dirty commits because if we cleaned up the most recent
-    // dirty commits every time, we might not be able to report an error as soon as a dirty commit
-    // is generated because dirty commit has been cleaned, which could result in a user making a
-    // dirty commit that succeeds, but
-    // ultimately not being able to view the contents of that commit.
+    // dirty commits every time, another client might not be able to report an error as soon as a
+    // dirty commit is generated because dirty commit has been cleaned, which could result in a user
+    // making a dirty commit that succeeds, but ultimately not being able to view the contents of
+    // that commit.
 
     // todo:Perhaps this threshold needs to be provided for configuration, but it seems unnecessary.
     long olderThan = 3600 * 24 * 1000 * 7;
