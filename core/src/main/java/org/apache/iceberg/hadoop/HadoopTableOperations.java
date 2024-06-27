@@ -22,7 +22,6 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -48,6 +47,7 @@ import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.LocationProvider;
 import org.apache.iceberg.relocated.com.google.common.annotations.VisibleForTesting;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
+import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.util.Pair;
 import org.apache.iceberg.util.Tasks;
@@ -56,7 +56,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * TableOperations implementation for file systems that support atomic rename.
+ * TableOperations implementation for file systems that support atomic non-overwriting rename.
+ *
+ * <p>For object storage(not support atomic non-overwriting rename), user should choose a suitable
+ * lockManager implementation.
  *
  * <p>This maintains metadata in a "metadata" folder under the table location.
  */
@@ -163,21 +166,28 @@ public class HadoopTableOperations implements TableOperations {
     Path finalMetadataFile = metadataFilePath(nextVersion, codec);
     FileSystem fs = getFileSystem(tempMetadataFile, conf);
     boolean versionCommitSuccess = false;
+    boolean useObjectStore =
+        metadata.propertyAsBoolean(
+            TableProperties.OBJECT_STORE_ENABLED, TableProperties.OBJECT_STORE_ENABLED_DEFAULT);
+    int previousVersionsMax =
+        metadata.propertyAsInt(
+            TableProperties.METADATA_PREVIOUS_VERSIONS_MAX,
+            TableProperties.METADATA_PREVIOUS_VERSIONS_MAX_DEFAULT);
     try {
-      fs.delete(versionHintFile(), false /* recursive delete*/);
-      versionCommitSuccess = commitNewVersion(fs, tempMetadataFile, finalMetadataFile, nextVersion);
+      tryLock(tempMetadataFile, finalMetadataFile);
+      versionCommitSuccess =
+          commitNewVersion(fs, tempMetadataFile, finalMetadataFile, nextVersion, useObjectStore);
       if (!versionCommitSuccess) {
         throw new CommitFailedException(
-            "Can not commit newMetaData because version [%s] has already been committed. commitVersion=[%s],tempMetaData=[%s],finalMetaData=[%s].Are there other clients running in parallel with the current task?",
-            nextVersion, nextVersion, tempMetadataFile, finalMetadataFile);
+            "Can not commit newMetaData because version [%s] has already been committed. tempMetaData=[%s],finalMetaData=[%s].Are there other clients running in parallel with the current task?",
+            nextVersion, tempMetadataFile, finalMetadataFile);
       }
-      tryCleanDirtyCommitImmediately(metadata, nextVersion, fs, finalMetadataFile);
+      validate(useObjectStore, previousVersionsMax, nextVersion, fs, finalMetadataFile);
       this.shouldRefresh = true;
       LOG.info("Committed a new metadata file {}", finalMetadataFile);
       // update the best-effort version pointer
       writeVersionHint(fs, nextVersion);
       deleteRemovedMetadataFiles(base, metadata);
-      cleanAllDirtyCommit(fs, metadata);
     } catch (CommitStateUnknownException e) {
       this.shouldRefresh = true;
       throw e;
@@ -187,63 +197,83 @@ public class HadoopTableOperations implements TableOperations {
         io().deleteFile(tempMetadataFile.toString());
         throw new CommitFailedException(e);
       }
+    } finally {
+      unlock(tempMetadataFile, finalMetadataFile);
     }
   }
 
-  public void tryCleanDirtyCommitImmediately(
-      TableMetadata metadata, int nextVersion, FileSystem fs, Path finalMetadataFile)
+  private void tryLock(Path src, Path dst) {
+    if (!lockManager.acquire(dst.toString(), src.toString())) {
+      throw new CommitFailedException(
+          "Failed to acquire lock on file: %s with owner: %s", dst, src);
+    }
+  }
+
+  private void unlock(Path src, Path dst) {
+    try {
+      if (!lockManager.release(dst.toString(), src.toString())) {
+        LOG.warn("Failed to release lock on file: {} with owner: {}", dst, src);
+      }
+    } catch (Throwable ignored) {
+      // do nothing.
+    }
+  }
+
+  private void validate(
+      Boolean useObjectStore,
+      int previousVersionsMax,
+      int nextVersion,
+      FileSystem fs,
+      Path finalMetadataFile)
+      throws IOException {
+    if (!useObjectStore) {
+      fastFailIfDirtyCommit(previousVersionsMax, nextVersion, fs, finalMetadataFile);
+      cleanAllDirtyCommit(fs, previousVersionsMax);
+    }
+  }
+
+  public void fastFailIfDirtyCommit(
+      int previousVersionsMax, int nextVersion, FileSystem fs, Path finalMetadataFile)
       throws IOException {
     // If there is a dirty commit, i.e., When a very old version has been cleaned up, but we
     // resubmit it in
-    // some way. For example, concurrency scenarios. If we do nothing, it will look like a
+    // some way. For example, concurrency commit. If we do nothing, it will look like a
     // successful commit to the user, but the contents of the commit will not be visible. In this
     // case, we need to explicitly throw an exception to indicate to the user that the commit
     // failed.
-    int previousVersionsMax =
-        metadata.propertyAsInt(
-            TableProperties.METADATA_PREVIOUS_VERSIONS_MAX,
-            TableProperties.METADATA_PREVIOUS_VERSIONS_MAX_DEFAULT);
     int currentMaxVersion = findVersionWithOutVersionHint(fs);
     if ((currentMaxVersion - nextVersion) > previousVersionsMax && fs.exists(finalMetadataFile)) {
       // Clean up potentially dirty commit records
-      fs.delete(finalMetadataFile, false);
-      String msg =
-          String.format(
-              "The commit for version [%s] has actually failed, because the latest version is now an updated version [%s].Are there other clients running in parallel with the current task?",
-              nextVersion, nextVersion);
-      throw new CommitFailedException(new RuntimeException(msg));
+      io().deleteFile(finalMetadataFile.toString());
+      throw new CommitFailedException(
+          "The commit for version [%s] has actually failed, because the latest version is now an updated to [%s].Are there other clients running in parallel with the current task?",
+          nextVersion, currentMaxVersion);
     }
   }
 
-  public void cleanAllDirtyCommit(FileSystem fs, TableMetadata metadata) throws IOException {
-    int previousVersionsMax =
-        metadata.propertyAsInt(
-            TableProperties.METADATA_PREVIOUS_VERSIONS_MAX,
-            TableProperties.METADATA_PREVIOUS_VERSIONS_MAX_DEFAULT);
+  public void cleanAllDirtyCommit(FileSystem fs, int previousVersionsMax) throws IOException {
     FileStatus[] files =
         fs.listStatus(metadataRoot(), name -> VERSION_PATTERN.matcher(name.getName()).matches());
-    List<Path> dirtyCommit = new ArrayList<>();
+    List<Path> dirtyCommit = Lists.newArrayList();
     int currentMaxVersion = findVersionWithOutVersionHint(fs);
     long now = System.currentTimeMillis();
-    // We don't clean up the most recent dirty commits here because if we cleaned up the most recent
-    // dirty commits every time, another client might not be able to report an error as soon as a
-    // dirty commit is generated because dirty commit has been cleaned, which could result in a user
-    // making a dirty commit that succeeds, but ultimately not being able to view the contents of
-    // that commit.
+    // We don't clean up the most recent dirty commits because if we cleaned up the most recent
+    // dirty commits every time, we might not be able to report an error as soon as a dirty commit
+    // is generated, which could result in a user making a dirty commit that succeeds, but
+    // ultimately not being able to view the contents of that commit.
 
     // todo:Perhaps this threshold needs a configuration,But that's not necessary, at least not yet.
     long olderThan = 3600 * 24 * 1000 * 7;
     for (FileStatus file : files) {
       long modificationTime = file.getModificationTime();
       Path path = file.getPath();
-      int version = version(path.getName());
-      if ((currentMaxVersion - version > previousVersionsMax)
+      if ((currentMaxVersion - version(path.getName()) > previousVersionsMax)
           && (now - modificationTime) > olderThan) {
         dirtyCommit.add(path);
       }
     }
     for (Path path : dirtyCommit) {
-      fs.delete(path, false);
+      io().deleteFile(path.toString());
     }
   }
 
@@ -372,7 +402,7 @@ public class HadoopTableOperations implements TableOperations {
     try {
       writeVersionToPath(fs, tempVersionHintFile, versionToWrite);
       fs.rename(tempVersionHintFile, versionHintFile);
-    } catch (Exception e) {
+    } catch (IOException e) {
       // Cleaning up temporary files.
       if (fs.exists(tempVersionHintFile)) {
         io().deleteFile(tempVersionHintFile.toString());
@@ -452,28 +482,19 @@ public class HadoopTableOperations implements TableOperations {
    * @return If it returns true, then the commit was successful.
    */
   @VisibleForTesting
-  boolean commitNewVersion(FileSystem fs, Path src, Path dst, Integer nextVersion)
+  boolean commitNewVersion(
+      FileSystem fs, Path src, Path dst, Integer nextVersion, Boolean useObjectStore)
       throws IOException {
-    try {
-      if (!lockManager.acquire(dst.toString(), src.toString())) {
-        throw new CommitFailedException(
-            "Failed to acquire lock on file: %s with owner: %s", dst, src);
-      }
-
-      if (fs.exists(dst)) {
-        throw new CommitFailedException("Version %d already exists: %s", nextVersion, dst);
-      }
-      if (!nextVersionIsLatest(nextVersion, fs)) {
-        throw new CommitFailedException(
-            "Cannot commit version [%d] because it is smaller or much larger than the current latest version [%d].Are there other clients running in parallel with the current task?",
-            nextVersion, findVersionWithOutVersionHint(fs));
-      }
-      return renameMetaDataFileAndCheck(fs, src, dst);
-    } finally {
-      if (!lockManager.release(dst.toString(), src.toString())) {
-        LOG.warn("Failed to release lock on file: {} with owner: {}", dst, src);
-      }
+    io().deleteFile(versionHintFile().toString());
+    if (fs.exists(dst)) {
+      throw new CommitFailedException("Version %d already exists: %s", nextVersion, dst);
     }
+    if (!useObjectStore && !nextVersionIsLatest(nextVersion, fs)) {
+      throw new CommitFailedException(
+          "Cannot commit version [%d] because it is smaller or much larger than the current latest version [%d].Are there other clients running in parallel with the current task?",
+          nextVersion, findVersionWithOutVersionHint(fs));
+    }
+    return renameMetaDataFileAndCheck(fs, src, dst, useObjectStore);
   }
 
   protected FileSystem getFileSystem(Path path, Configuration hadoopConf) {
@@ -482,8 +503,15 @@ public class HadoopTableOperations implements TableOperations {
 
   @VisibleForTesting
   boolean checkMetaDataFileRenameSuccess(
-      FileSystem fs, Path tempMetaDataFile, Path finalMetaDataFile) throws IOException {
-    return fs.exists(finalMetaDataFile) && !fs.exists(tempMetaDataFile);
+      FileSystem fs, Path tempMetaDataFile, Path finalMetaDataFile, Boolean useObjectStore)
+      throws IOException {
+    if (!useObjectStore) {
+      return fs.exists(finalMetaDataFile) && !fs.exists(tempMetaDataFile);
+    } else {
+      // Since we have used the locking service, we only need to determine whether the target file
+      // exists or not
+      return fs.exists(finalMetaDataFile);
+    }
   }
 
   @VisibleForTesting
@@ -493,29 +521,32 @@ public class HadoopTableOperations implements TableOperations {
   }
 
   private boolean renameCheck(
-      FileSystem fs, Path tempMetaDataFile, Path finalMetaDataFile, Throwable rootError) {
+      FileSystem fs,
+      Path tempMetaDataFile,
+      Path finalMetaDataFile,
+      Throwable rootError,
+      Boolean useObjectStore) {
     try {
-      return checkMetaDataFileRenameSuccess(fs, tempMetaDataFile, finalMetaDataFile);
+      return checkMetaDataFileRenameSuccess(
+          fs, tempMetaDataFile, finalMetaDataFile, useObjectStore);
     } catch (Throwable e) {
-      LOG.error(
-          "No correctness check can be performed.src=[{}],dst=[{}].",
-          tempMetaDataFile,
-          finalMetaDataFile,
-          e);
-      String msg =
-          String.format(
-              "Exception thrown when renaming [%s] to [%s].Also no correctness check can be performed.",
-              tempMetaDataFile, finalMetaDataFile);
-      throw new CommitStateUnknownException(msg, rootError != null ? rootError : e);
+      throw new CommitStateUnknownException(rootError != null ? rootError : e);
     }
   }
 
   @VisibleForTesting
-  boolean renameMetaDataFileAndCheck(FileSystem fs, Path tempMetaDataFile, Path finalMetaDataFile) {
+  boolean renameMetaDataFileAndCheck(
+      FileSystem fs, Path tempMetaDataFile, Path finalMetaDataFile, Boolean useObjectStore) {
     try {
       return renameMetaDataFile(fs, tempMetaDataFile, finalMetaDataFile);
+    } catch (IOException e) {
+      // Server-side error, we need to try to recheck it again
+      return renameCheck(fs, tempMetaDataFile, finalMetaDataFile, e, useObjectStore);
     } catch (Throwable e) {
-      return renameCheck(fs, tempMetaDataFile, finalMetaDataFile, e);
+      // Maybe Client-side error,Since the rename command may have already been issued and has not
+      // yet been executed.There is no point in performing a check operation at this point.throw
+      // CommitStateUnknownException and stop everything.
+      throw new CommitStateUnknownException(e);
     }
   }
   /**
