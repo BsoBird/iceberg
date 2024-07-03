@@ -202,11 +202,19 @@ public class HadoopTableOperations implements TableOperations {
     } catch (Throwable e) {
       this.shouldRefresh = versionCommitSuccess;
       if (!versionCommitSuccess) {
-        io().deleteFile(tempMetadataFile.toString());
+        tryDelete(tempMetadataFile);
         throw new CommitFailedException(e);
       }
     } finally {
       unlock(tempMetadataFile, metadataRoot());
+    }
+  }
+
+  private void tryDelete(Path path) {
+    try {
+      io().deleteFile(path.toString());
+    } catch (Throwable ignored) {
+      // do nothing
     }
   }
 
