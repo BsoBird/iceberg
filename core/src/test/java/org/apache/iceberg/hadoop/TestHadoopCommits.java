@@ -754,8 +754,6 @@ public class TestHadoopCommits extends HadoopTableTestBase {
   @Test
   public void testConcurrentCommitAndRejectCommitAlreadyExistsVersion()
       throws InterruptedException {
-    // We need to reject versions that have already been committed by other clients and have not yet
-    // been cleaned up.
     table.newFastAppend().appendFile(FILE_A).commit();
     ExecutorService executorService = Executors.newFixedThreadPool(8);
     AtomicReference<Throwable> unexpectedException = new AtomicReference<>(null);
@@ -810,8 +808,8 @@ public class TestHadoopCommits extends HadoopTableTestBase {
   @Test
   public void testRejectCommitAlreadyExistsVersionWithUsingObjectStore()
       throws InterruptedException {
-    // We need to reject versions that have already been committed by other clients and have not yet
-    // been cleaned up.
+    // Since java.io.UnixFileSystem.rename overwrites existing files and we currently share the same
+    // memory locks. So we can use the local file system to simulate the use of object storage.
     table.updateProperties().set(TableProperties.OBJECT_STORE_ENABLED, "true").commit();
     table.newFastAppend().appendFile(FILE_A).commit();
     ExecutorService executorService = Executors.newFixedThreadPool(8);
@@ -865,8 +863,7 @@ public class TestHadoopCommits extends HadoopTableTestBase {
 
   @Test
   public void testConcurrentCommitAndRejectTooOldCommit() throws InterruptedException {
-    // We need to reject a commit that has been cleaned up but is much smaller than the current
-    // version.
+    // Too-old-commit: commitVersion < currentMaxVersion - METADATA_PREVIOUS_VERSIONS_MAX
     table.newFastAppend().appendFile(FILE_A).commit();
     table.updateProperties().set(TableProperties.METADATA_PREVIOUS_VERSIONS_MAX, "2").commit();
     table
@@ -932,8 +929,8 @@ public class TestHadoopCommits extends HadoopTableTestBase {
 
   @Test
   public void testRejectTooOldCommitWithUsingObjectStore() throws InterruptedException {
-    // We need to reject a commit that has been cleaned up but is much smaller than the current
-    // version.
+    // Since java.io.UnixFileSystem.rename overwrites existing files and we currently share the same
+    // memory locks. So we can use the local file system to simulate the use of object storage.
     table.updateProperties().set(TableProperties.OBJECT_STORE_ENABLED, "true").commit();
     table.newFastAppend().appendFile(FILE_A).commit();
     table.updateProperties().set(TableProperties.METADATA_PREVIOUS_VERSIONS_MAX, "2").commit();
