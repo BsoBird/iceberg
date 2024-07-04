@@ -253,16 +253,9 @@ public class HadoopTableOperations implements TableOperations {
   void fastFailIfDirtyCommit(
       int previousVersionsMax, int nextVersion, FileSystem fs, Path finalMetadataFile)
       throws IOException {
-    // If there is a dirty commit, i.e., When a very old version has been cleaned up, but we
-    // resubmit it in
-    // some way. For example, concurrency commit. If we do nothing, it will look like a
-    // successful commit to the user, but the contents of the commit will not be visible. In this
-    // case, we need to explicitly throw an exception to indicate to the user that the commit
-    // failed.
     int currentMaxVersion = findVersionWithOutVersionHint(fs);
     if ((currentMaxVersion - nextVersion) > previousVersionsMax && fs.exists(finalMetadataFile)) {
-      // Clean up potentially dirty commit records
-      io().deleteFile(finalMetadataFile.toString());
+      tryDelete(finalMetadataFile);
       throw new CommitStateUnknownException(
           new RejectedExecutionException(
               String.format(
@@ -277,14 +270,12 @@ public class HadoopTableOperations implements TableOperations {
     List<Path> dirtyCommits = Lists.newArrayList();
     int currentMaxVersion = findVersionWithOutVersionHint(fs);
     long now = System.currentTimeMillis();
-    // We don't clean up the most recent dirty commits because if we cleaned up the most recent
-    // dirty commits every time, we might not be able to report an error as soon as a dirty commit
-    // is generated, which could result in a user making a dirty commit that succeeds, but
-    // ultimately not being able to view the contents of that commit.
+    // We only clean up dirty commits that are some time old. This ensures that other clients can
+    // find out as soon as possible if their current commit is dirty.
 
     // todo:Currently, dirty commits from seven days ago are deleted by default.
     //  There is no need to configure this for now.
-    long ttl = 3600 * 24 * 1000 * 7;
+    long ttl = 3600L * 24 * 1000 * 7;
     for (FileStatus file : files) {
       long modificationTime = file.getModificationTime();
       Path path = file.getPath();
@@ -566,8 +557,8 @@ public class HadoopTableOperations implements TableOperations {
       // Server-side error, we need to try to recheck it again
       return renameCheck(fs, tempMetaDataFile, finalMetaDataFile, e, supportGlobalLocking);
     } catch (Exception e) {
-      // Maybe Client-side error,Since the rename command may have already been issued and has not
-      // yet been executed.There is no point in performing a check operation at this point.throw
+      // Maybe Client-side error,Since the rename command may have already been committed and has
+      // not yet been executed.There is no point in performing a check operation at this point.throw
       // CommitStateUnknownException and stop everything.
       throw new CommitStateUnknownException(e);
     }
