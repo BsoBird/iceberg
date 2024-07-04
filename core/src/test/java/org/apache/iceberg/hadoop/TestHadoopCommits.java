@@ -752,7 +752,8 @@ public class TestHadoopCommits extends HadoopTableTestBase {
   }
 
   @Test
-  public void testConcurrentCommitWithRejectAlreadyExistsVersion() throws InterruptedException {
+  public void testConcurrentCommitAndRejectCommitAlreadyExistsVersion()
+      throws InterruptedException {
     // We need to reject versions that have already been committed by other clients and have not yet
     // been cleaned up.
     table.newFastAppend().appendFile(FILE_A).commit();
@@ -807,7 +808,8 @@ public class TestHadoopCommits extends HadoopTableTestBase {
   }
 
   @Test
-  public void testRejectAlreadyExistsVersionByUsingObjectStore() throws InterruptedException {
+  public void testRejectCommitAlreadyExistsVersionWithUsingObjectStore()
+      throws InterruptedException {
     // We need to reject versions that have already been committed by other clients and have not yet
     // been cleaned up.
     table.updateProperties().set(TableProperties.OBJECT_STORE_ENABLED, "true").commit();
@@ -862,7 +864,7 @@ public class TestHadoopCommits extends HadoopTableTestBase {
   }
 
   @Test
-  public void testConcurrentCommitWithRejectTooOldCommit() throws InterruptedException {
+  public void testConcurrentCommitAndRejectTooOldCommit() throws InterruptedException {
     // We need to reject a commit that has been cleaned up but is much smaller than the current
     // version.
     table.newFastAppend().appendFile(FILE_A).commit();
@@ -929,7 +931,7 @@ public class TestHadoopCommits extends HadoopTableTestBase {
   }
 
   @Test
-  public void testRejectTooOldCommitByUsingObjectStore() throws InterruptedException {
+  public void testRejectTooOldCommitWithUsingObjectStore() throws InterruptedException {
     // We need to reject a commit that has been cleaned up but is much smaller than the current
     // version.
     table.updateProperties().set(TableProperties.OBJECT_STORE_ENABLED, "true").commit();
@@ -993,7 +995,7 @@ public class TestHadoopCommits extends HadoopTableTestBase {
   }
 
   @Test
-  public void testConcurrentCommitWithRejectDirtyCommit() throws InterruptedException {
+  public void testConcurrentCommitAndRejectDirtyCommit() throws InterruptedException {
     // At the end of the commit, if we realize that it is a dirty commit, we should fail the commit.
     table.newFastAppend().appendFile(FILE_A).commit();
     table.updateProperties().set(TableProperties.METADATA_PREVIOUS_VERSIONS_MAX, "2").commit();
