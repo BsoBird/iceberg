@@ -535,6 +535,13 @@ public class TestHadoopCommits extends HadoopTableTestBase {
         .when(spyOps2)
         .renameMetaDataFile(any(), any(), any());
     assertCommitFail(baseTable, spyOps2, OutOfMemoryError.class, "Java heap space");
+
+    HadoopTableOperations spyOps3 = spy(tableOperations);
+    doThrow(new RuntimeException("UNKNOWN ERROR"))
+        .when(spyOps3)
+        .renameMetaDataFile(any(), any(), any());
+    assertCommitNotChangeVersion(
+        baseTable, spyOps3, CommitStateUnknownException.class, "UNKNOWN ERROR");
   }
 
   @Test
