@@ -199,7 +199,7 @@ public class HadoopTableOperations implements TableOperations {
     } catch (CommitStateUnknownException e) {
       this.shouldRefresh = true;
       throw e;
-    } catch (Throwable e) {
+    } catch (Exception e) {
       this.shouldRefresh = versionCommitSuccess;
       if (!versionCommitSuccess) {
         tryDelete(tempMetadataFile);
@@ -213,7 +213,7 @@ public class HadoopTableOperations implements TableOperations {
   private void tryDelete(Path path) {
     try {
       io().deleteFile(path.toString());
-    } catch (Throwable ignored) {
+    } catch (Exception ignored) {
       // do nothing
     }
   }
@@ -231,7 +231,7 @@ public class HadoopTableOperations implements TableOperations {
       if (!lockManager.release(dst.toString(), src.toString())) {
         LOG.warn("Failed to release lock on file: {} with owner: {}", dst, src);
       }
-    } catch (Throwable ignored) {
+    } catch (Exception ignored) {
       // do nothing.
     }
   }
@@ -552,7 +552,7 @@ public class HadoopTableOperations implements TableOperations {
     try {
       return checkMetaDataFileRenameSuccess(
           fs, tempMetaDataFile, finalMetaDataFile, supportGlobalLocking);
-    } catch (Throwable e) {
+    } catch (Exception e) {
       throw new CommitStateUnknownException(rootError != null ? rootError : e);
     }
   }
@@ -565,7 +565,7 @@ public class HadoopTableOperations implements TableOperations {
     } catch (IOException e) {
       // Server-side error, we need to try to recheck it again
       return renameCheck(fs, tempMetaDataFile, finalMetaDataFile, e, supportGlobalLocking);
-    } catch (Throwable e) {
+    } catch (Exception e) {
       // Maybe Client-side error,Since the rename command may have already been issued and has not
       // yet been executed.There is no point in performing a check operation at this point.throw
       // CommitStateUnknownException and stop everything.

@@ -534,8 +534,7 @@ public class TestHadoopCommits extends HadoopTableTestBase {
     doThrow(new OutOfMemoryError("Java heap space"))
         .when(spyOps2)
         .renameMetaDataFile(any(), any(), any());
-    assertCommitNotChangeVersion(
-        baseTable, spyOps2, CommitStateUnknownException.class, "Java heap space");
+    assertCommitFail(baseTable, spyOps2, OutOfMemoryError.class, "Java heap space");
   }
 
   @Test
@@ -576,7 +575,7 @@ public class TestHadoopCommits extends HadoopTableTestBase {
   private void assertCommitNotChangeVersion(
       BaseTable baseTable,
       HadoopTableOperations spyOps,
-      Class<? extends RuntimeException> exceptionClass,
+      Class<? extends Throwable> exceptionClass,
       String msg) {
     int versionBefore = spyOps.findVersion();
     assertCommitFail(baseTable, spyOps, exceptionClass, msg);
@@ -587,7 +586,7 @@ public class TestHadoopCommits extends HadoopTableTestBase {
   private void assertCommitFail(
       BaseTable baseTable,
       HadoopTableOperations spyOps,
-      Class<? extends RuntimeException> exceptionClass,
+      Class<? extends Throwable> exceptionClass,
       String msg) {
     TableMetadata metadataV1 = spyOps.current();
     SortOrder dataSort = SortOrder.builderFor(baseTable.schema()).asc("data").build();
