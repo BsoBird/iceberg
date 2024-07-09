@@ -87,6 +87,7 @@ sqlite-jdbc = "3.46.0.0"
 testcontainers = "1.19.8"
 tez010 = "0.10.3"
 tez08 = { strictly = "0.8.4"}  # see rich version usage explanation above
+redission = "3.32.0"
 
 [libraries]
 activation = { module = "javax.activation:activation", version.ref = "activation" }
@@ -172,6 +173,7 @@ scala-collection-compat = { module = "org.scala-lang.modules:scala-collection-co
 slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }
 slf4j-simple = { module = "org.slf4j:slf4j-simple", version.ref = "slf4j" }
 snowflake-jdbc = { module = "net.snowflake:snowflake-jdbc", version.ref = "snowflake-jdbc" }
+redission = { module = "org.redisson:redisson", version.ref = "redission" }
 
 # test libraries
 assertj-core = { module = "org.assertj:assertj-core", version.ref = "assertj-core" }
