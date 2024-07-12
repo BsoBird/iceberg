@@ -32,6 +32,7 @@ import org.apache.http.client.HttpClient;
 import org.apache.http.client.methods.HttpGet;
 import org.apache.http.client.protocol.RequestAcceptEncoding;
 import org.apache.http.client.protocol.ResponseContentEncoding;
+import org.apache.http.client.utils.URIBuilder;
 import org.apache.http.impl.client.DefaultHttpClient;
 import org.apache.http.params.BasicHttpParams;
 import org.apache.http.params.HttpParams;
@@ -50,6 +51,8 @@ public class ServerSideHttpLockManager extends LockManagers.BaseLockManager{
     private final static String OWNER_ID = "ownerId";
     private final static int REQUEST_SUCCESS = 200;
     public final static String REQUEST_URL = "lock.http.conf.request.url";
+
+    private final static String params = "ownerId=${ownerId}&entityId=${entityId}&operator=${operator}";
     private HttpClient httpClient = null;
     public ServerSideHttpLockManager(){}
 
@@ -89,22 +92,29 @@ public class ServerSideHttpLockManager extends LockManagers.BaseLockManager{
         if(entity==null){
             return null;
         }
-        return new String(Base64.getUrlEncoder().encode(entity.getBytes(StandardCharsets.UTF_8)));
+        return new String(Base64.getUrlEncoder().encode(entity.getBytes(StandardCharsets.UTF_8)),StandardCharsets.UTF_8);
     }
 
     private boolean process(String entityId, String ownerId, String operator){
         try{
             HttpGet lockRequest = new HttpGet();
-            lockRequest.addHeader("Content-Type","application/x-www-form-urlencoded");
-            lockRequest.setURI(new URI(httpUrl));
+            lockRequest.addHeader("Content-Type","application/json");
             HttpParams requestParams = new BasicHttpParams();
             requestParams.setParameter(OWNER_ID,encode(ownerId));
             requestParams.setParameter(ENTITY_ID,encode(entityId));
             requestParams.setParameter(OPERATOR,operator);
+            String requestUrl = new URIBuilder(httpUrl)
+                    .setParameter(OWNER_ID, encode(ownerId))
+                    .setParameter(ENTITY_ID,encode(entityId))
+                    .setParameter(OPERATOR,operator)
+                    .build().toString();
             lockRequest.setParams(requestParams);
+            lockRequest.setURI(new URI(requestUrl));
             HttpResponse response = httpClient.execute(lockRequest);
             StatusLine stateLine = response.getStatusLine();
-            return REQUEST_SUCCESS == stateLine.getStatusCode();
+            int statsCode = stateLine.getStatusCode();
+            lockRequest.abort();
+            return REQUEST_SUCCESS == statsCode;
         }catch (URISyntaxException e){
             throw new RuntimeException(e);
         }catch (Exception e){

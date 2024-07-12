@@ -21,6 +21,8 @@
 
 package org.apache.iceberg.lock;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -43,6 +45,7 @@ public class RedissonLockManager extends LockManagers.BaseLockManager{
     public final static String REDISSON_LOCK_URL = "lock.redisson.conf.url";
     public final static String REDISSON_LOCK_KEY_PREFIX = "lock.redisson.key.prefix";
     public final static String REDISSON_LOCK_RETRY_MAX_TIMES = "lock.redisson.retry.max-times";
+    public final static String REDISSON_LOCK_RETRY_MAX_TIMES_DEFAULT = "3";
     private static final Logger LOG = LoggerFactory.getLogger(RedissonLockManager.class);
 
     private final Map<String,RLock> lockCache = Maps.newHashMap();
@@ -52,9 +55,37 @@ public class RedissonLockManager extends LockManagers.BaseLockManager{
     public RedissonLockManager(){}
 
     public RedissonLockManager(String redisUrl){
-        Config config = new Config();
-        config.useClusterServers().addNodeAddress(redisUrl);
-        redissonClient = Redisson.create(config);
+        try {
+            init(redisUrl,null);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public RedissonLockManager(String redisUrl,String confYmlBase64){
+        try {
+            init(redisUrl,confYmlBase64);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private synchronized void init(String redissonUrl,String redissonConfYmlBase64) throws IOException {
+        if(redissonClient!=null){
+            return;
+        }
+        if(!Strings.isNullOrEmpty(redissonConfYmlBase64)){
+            String ymlConfig = new String(Base64.getDecoder().decode(redissonConfYmlBase64), StandardCharsets.UTF_8);
+            Config config = Config.fromYAML(ymlConfig);
+            redissonClient = Redisson.create(config);
+        }else if(!Strings.isNullOrEmpty(redissonUrl)){
+            Config config = new Config();
+            config.useSingleServer().setAddress(redissonUrl);
+            redissonClient = Redisson.create(config);
+        }else{
+            String msg = String.format("[%s] or [%s] must be set.",REDISSON_LOCK_CONF,REDISSON_LOCK_URL);
+            throw new IllegalArgumentException(msg);
+        }
     }
 
     @Override
@@ -63,20 +94,9 @@ public class RedissonLockManager extends LockManagers.BaseLockManager{
             super.initialize(properties);
             String redissonConfYmlBase64 = properties.getOrDefault(REDISSON_LOCK_CONF,null);
             String redissonUrl = properties.getOrDefault(REDISSON_LOCK_URL,null);
-            if(!Strings.isNullOrEmpty(redissonConfYmlBase64)){
-                String ymlConfig = new String(Base64.getDecoder().decode(redissonConfYmlBase64));
-                Config config = Config.fromYAML(ymlConfig);
-                redissonClient = Redisson.create(config);
-            }else if(!Strings.isNullOrEmpty(redissonUrl)){
-                Config config = new Config();
-                config.useClusterServers().addNodeAddress(redissonUrl);
-                redissonClient = Redisson.create(config);
-            }else{
-                String msg = String.format("[%s] or [%s] must be set.",REDISSON_LOCK_CONF,REDISSON_LOCK_URL);
-                throw new IllegalArgumentException(msg);
-            }
+            init(redissonUrl,redissonConfYmlBase64);
             this.prefix = properties.getOrDefault(REDISSON_LOCK_KEY_PREFIX,null);
-            this.maxRetryTimes = Integer.parseInt(properties.getOrDefault(REDISSON_LOCK_RETRY_MAX_TIMES,"10"));
+            this.maxRetryTimes = Integer.parseInt(properties.getOrDefault(REDISSON_LOCK_RETRY_MAX_TIMES,REDISSON_LOCK_RETRY_MAX_TIMES_DEFAULT));
         }catch (Exception e){
             LOG.error("Unable to initialize redisson client.",e);
             throw new RuntimeException(e);
